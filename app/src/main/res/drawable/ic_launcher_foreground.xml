@@ -1,0 +1,16 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- gold square, brand mark -->
+    <path
+        android:fillColor="#C9A227"
+        android:pathData="M16,16 h13 v13 h-13 Z" />
+    <!-- price pulse line -->
+    <path
+        android:strokeColor="#F5EFE4"
+        android:strokeWidth="5"
+        android:fillColor="#00000000"
+        android:pathData="M14,62 L36,62 L45,40 L57,84 L66,62 L94,62" />
+</vector>
