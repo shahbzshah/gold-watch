@@ -24,8 +24,8 @@ android {
         applicationId = "com.megah.goldwatch"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.0.1"
     }
 
     signingConfigs {
@@ -35,6 +35,9 @@ android {
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")
+                // v1.0 shipped v2-only; some installers want both schemes.
+                isV1SigningEnabled = true
+                isV2SigningEnabled = true
             }
         }
     }
