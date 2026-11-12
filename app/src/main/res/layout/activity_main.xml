@@ -1,29 +1,93 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#141210"
-    android:padding="10dp">
-
-    <WebView
-        android:id="@+id/wvDash"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+    android:background="#141210">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:layout_marginTop="8dp">
+        android:orientation="vertical"
+        android:padding="16dp">
 
-        <Button
-            android:id="@+id/btnRefresh"
+        <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Reload" />
-    </LinearLayout>
+            android:text="GOLD WATCH"
+            android:textColor="#f5c542"
+            android:textSize="14sp"
+            android:textStyle="bold" />
 
-</LinearLayout>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Shift bell — XAUUSD 5m"
+            android:textColor="#b8b0a6"
+            android:textSize="14sp"
+            android:layout_marginTop="2dp" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="WAITING"
+            android:textColor="#ffffff"
+            android:textSize="32sp"
+            android:textStyle="bold"
+            android:layout_marginTop="28dp" />
+
+        <TextView
+            android:id="@+id/tvMeta"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="5m shift bell"
+            android:textColor="#b8b0a6"
+            android:textSize="16sp"
+            android:layout_marginTop="6dp" />
+
+        <TextView
+            android:id="@+id/tvLastShift"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="No shifts yet — waiting for the next turn."
+            android:textColor="#ffffff"
+            android:textSize="18sp"
+            android:layout_marginTop="28dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Recent shifts"
+            android:textColor="#f5c542"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:layout_marginTop="24dp" />
+
+        <TextView
+            android:id="@+id/tvRecent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#d8d0c6"
+            android:textSize="16sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="6dp" />
+
+        <TextView
+            android:id="@+id/tvChecked"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="no checks yet"
+            android:textColor="#8a8378"
+            android:textSize="13sp"
+            android:layout_marginTop="28dp" />
+
+        <Button
+            android:id="@+id/btnTestBell"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Test bell"
+            android:layout_marginTop="24dp" />
+
+    </LinearLayout>
+</ScrollView>

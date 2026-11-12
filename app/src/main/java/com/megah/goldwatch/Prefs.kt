@@ -2,20 +2,20 @@ package com.megah.goldwatch
 
 import android.content.Context
 import android.content.SharedPreferences
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
- * All app state lives here: the tracked signal (the latest one seen
- * in /api/state) and the notification bookkeeping (which signal has
- * been seen, and whether its outcome has already been announced).
- * There is deliberately no watcher on/off flag — the watcher is
- * always on (see MainActivity and BootReceiver), so no stale "off"
- * state can survive.
+ * All app state lives here: the shift bell's latest state (written
+ * by WatchService on every poll, read by MainActivity to draw the
+ * bell screen) and the notification bookkeeping (which shift epoch
+ * has been seen, so history never spams).
  *
- * No key of any kind is stored: the gold /api/state endpoint is
- * public.
+ * No key of any kind is stored: the gold bot's /api/shift endpoint
+ * is public.
+ *
+ * NOTE (v1.1.0): the v1.0 signal/outcome fields (last_signal_ts,
+ * signal_outcome, signal_direction/entry/sl/tp) are gone — the app
+ * no longer shows Phil+RUDY signals. Their keys may linger in
+ * SharedPreferences from an upgrade; they are never read.
  */
 object Prefs {
     private const val NAME = "goldwatch"
@@ -29,43 +29,37 @@ object Prefs {
     fun setBaselineDone(ctx: Context, v: Boolean) =
         prefs(ctx).edit().putBoolean("baseline_done", v).apply()
 
-    /** Epoch seconds of the latest signal seen, 0 = none yet. */
-    fun lastSignalTs(ctx: Context): Long =
-        prefs(ctx).getLong("last_signal_ts", 0L)
+    /** Epoch seconds of the latest shift seen, 0 = none yet. */
+    fun lastShiftEpoch(ctx: Context): Long =
+        prefs(ctx).getLong("last_shift_epoch", 0L)
 
-    fun setLastSignalTs(ctx: Context, ts: Long) =
-        prefs(ctx).edit().putLong("last_signal_ts", ts).apply()
+    fun setLastShiftEpoch(ctx: Context, epoch: Long) =
+        prefs(ctx).edit().putLong("last_shift_epoch", epoch).apply()
 
-    /** "open", "TP" or "SL" for the tracked signal. */
-    fun signalOutcome(ctx: Context): String =
-        prefs(ctx).getString("signal_outcome", "open") ?: "open"
+    /** Recent shifts as display lines, newest first (max 10). */
+    fun recentShifts(ctx: Context): String =
+        prefs(ctx).getString("recent_shifts", "") ?: ""
 
-    fun setSignalOutcome(ctx: Context, v: String) =
-        prefs(ctx).edit().putString("signal_outcome", v).apply()
+    fun setRecentShifts(ctx: Context, lines: String) =
+        prefs(ctx).edit().putString("recent_shifts", lines).apply()
 
-    /** Tracked signal levels, saved so the outcome can still be
-     *  judged from the live price even after /api/state stops
-     *  reporting the signal (e.g. a new day starts). */
-    fun setSignalLevels(ctx: Context, direction: String,
-                        entry: Double, sl: Double, tp: Double) =
+    /** Live bell status line, e.g. "ARMED SELL — overbought". */
+    fun shiftStatus(ctx: Context): String =
+        prefs(ctx).getString("shift_status", "WAITING") ?: "WAITING"
+
+    fun shiftRsi(ctx: Context): String =
+        prefs(ctx).getString("shift_rsi", "") ?: ""
+
+    fun shiftPrice(ctx: Context): String =
+        prefs(ctx).getString("shift_price", "") ?: ""
+
+    fun setShiftStatus(ctx: Context, status: String,
+                       rsi: String, price: String) =
         prefs(ctx).edit()
-            .putString("signal_direction", direction)
-            .putString("signal_entry", entry.toString())
-            .putString("signal_sl", sl.toString())
-            .putString("signal_tp", tp.toString())
+            .putString("shift_status", status)
+            .putString("shift_rsi", rsi)
+            .putString("shift_price", price)
             .apply()
-
-    fun signalDirection(ctx: Context): String =
-        prefs(ctx).getString("signal_direction", "") ?: ""
-
-    fun signalEntry(ctx: Context): Double =
-        prefs(ctx).getString("signal_entry", "")?.toDoubleOrNull() ?: 0.0
-
-    fun signalSl(ctx: Context): Double =
-        prefs(ctx).getString("signal_sl", "")?.toDoubleOrNull() ?: 0.0
-
-    fun signalTp(ctx: Context): Double =
-        prefs(ctx).getString("signal_tp", "")?.toDoubleOrNull() ?: 0.0
 
     fun setLastPoll(ctx: Context, ok: Boolean, note: String) =
         prefs(ctx).edit()
@@ -78,7 +72,8 @@ object Prefs {
         val p = prefs(ctx)
         val ms = p.getLong("last_poll_ms", 0)
         if (ms == 0L) return "no checks yet"
-        val t = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(ms))
+        val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+            .format(java.util.Date(ms))
         val ok = p.getBoolean("last_poll_ok", false)
         val note = p.getString("last_poll_note", "") ?: ""
         return "last check $t — " + (if (ok) "OK $note" else "failed ($note)")

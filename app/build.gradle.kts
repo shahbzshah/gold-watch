@@ -7,8 +7,8 @@ plugins {
 
 // Release signing credentials live in keystore.properties (project
 // root, never committed). If absent, the release build is unsigned.
-// There is no dashboard key in this app: the gold bot's /api/state
-// endpoint is public.
+// There is no key in this app: the gold bot's /api/shift endpoint
+// is public.
 val keystorePropsFile = rootProject.file("keystore.properties")
 val hasReleaseKey = keystorePropsFile.exists()
 val keystoreProps = Properties().apply {
@@ -24,8 +24,8 @@ android {
         applicationId = "com.megah.goldwatch"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.1.0"
     }
 
     signingConfigs {
@@ -63,7 +63,7 @@ android {
 }
 
 dependencies {
-    // Framework-only app (like Crash Watch): WebView, Views,
-    // org.json, NotificationManager and foreground services are all
-    // part of the Android framework — no AndroidX dependencies.
+    // Framework-only app (like Crash Watch): Views, org.json,
+    // NotificationManager and foreground services are all part of
+    // the Android framework — no AndroidX dependencies.
 }

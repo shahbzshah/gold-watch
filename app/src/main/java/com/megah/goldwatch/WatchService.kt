@@ -8,45 +8,43 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
 /**
- * The notification engine. A foreground service polls the gold
- * bot's public /api/state every 30 seconds and turns changes into
+ * The shift bell. A foreground service polls the gold bot's public
+ * /api/shift every 30 seconds and turns new market shifts into
  * phone notifications:
  *
- *   - a new signal (last_signal.ts changes) -> "signals" channel,
- *     with direction, entry, SL and TP
- *   - the tracked signal closing at TP or SL -> "outcomes" channel,
- *     with the R result
+ *   - a shift event with a new epoch -> "shift" channel
+ *     (HIGH importance, WITH SOUND): "SHIFT SELL — XAUUSD" /
+ *     "SHIFT BUY — XAUUSD", with price and time.
  *
- * /api/state carries no outcome field and no stable signal id, so
- * the signal is identified by its ts (epoch seconds) and its
- * outcome is judged from the live price in the same response:
- * a BUY closes at TP when mid >= take_profit and at SL when
- * mid <= stop_loss (reversed for SELL). The R result is computed
- * from the signal's own levels: TP pays |TP-entry|/|entry-SL| R,
- * SL costs -1.0R. The price must be fresh (age_s <= 120) or the
- * outcome check is skipped, so a stale quote can never fake a
- * close. /api/state only ever exposes the latest signal, so the
- * app watches that one signal at a time; older signals' outcomes
- * stay visible in the dashboard's history.
- *
- * The endpoint is public — plain GET, no key, no auth headers.
- * The first successful poll only records the current signal as the
- * baseline — history never spams. Polling also keeps the free
- * Render service awake, so it doubles as the keep-alive pinger.
+ * A shift is identified by its firing-bar epoch. The endpoint is
+ * public — plain GET, no key, no auth headers. The first successful
+ * poll only records the current shifts as the baseline — history
+ * never spams. Polling also keeps the free Render service awake, so
+ * it doubles as the keep-alive pinger.
  *
  * The service is always on: MainActivity starts it on every launch
  * and BootReceiver restarts it on boot, and there is no stop control
  * in the UI. Only force-stop or uninstall ends it.
+ *
+ * v1.1.0: this replaces the v1.0 Phil+RUDY signal + outcome
+ * watcher. No signal, TP or SL is watched any more — the app is
+ * only the bell.
  */
 class WatchService : Service() {
 
@@ -56,7 +54,7 @@ class WatchService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createChannels()
+        createChannels(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -94,7 +92,7 @@ class WatchService : Service() {
     }
 
     private fun poll() {
-        val url = URL(STATE_URL)
+        val url = URL(SHIFT_URL)
         val conn = url.openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 15_000
@@ -105,103 +103,86 @@ class WatchService : Service() {
             return
         }
         val root = JSONObject(conn.inputStream.bufferedReader().readText())
+        val feedOk = root.optBoolean("feed_ok", false)
         val firstRun = !Prefs.baselineDone(this)
         var newCount = 0
 
-        val sig = root.optJSONObject("last_signal")
-        if (sig != null) {
-            val ts = sig.optLong("ts", 0L)
-            val seenTs = Prefs.lastSignalTs(this)
-            if (ts > 0 && ts != seenTs) {
-                val direction =
-                    sig.optString("direction", "").uppercase()
-                val entry = sig.optDouble("entry", 0.0)
-                val sl = sig.optDouble("stop_loss", 0.0)
-                val tp = sig.optDouble("take_profit", 0.0)
-                Prefs.setLastSignalTs(this, ts)
-                Prefs.setSignalOutcome(this, "open")
-                Prefs.setSignalLevels(this, direction, entry, sl, tp)
-                if (!firstRun) {
-                    notifySignal(direction, entry, sl, tp, ts)
-                    newCount++
+        val shifts = root.optJSONArray("shifts")
+        val newest = if (shifts != null && shifts.length() > 0)
+            shifts.optJSONObject(0) else null
+        if (newest != null) {
+            val epoch = newest.optLong("epoch", 0L)
+            if (epoch > 0) {
+                val seen = Prefs.lastShiftEpoch(this)
+                if (epoch > seen) {
+                    Prefs.setLastShiftEpoch(this, epoch)
+                    if (!firstRun) {
+                        notifyShift(newest)
+                        newCount++
+                    }
                 }
             }
+            Prefs.setRecentShifts(this, shiftsToLines(shifts))
         }
 
-        // Outcome check: judge the tracked (still-open) signal
-        // against the live price in this same response.
-        if (Prefs.signalOutcome(this) == "open" &&
-            Prefs.lastSignalTs(this) > 0L) {
-            checkOutcome(root)
-        }
+        // Live bell state for the UI screen.
+        val price = root.optDouble("price", -1.0)
+        val rsi = root.optDouble("rsi", -1.0)
+        val armed = root.optString("armed", "none")
+        Prefs.setShiftStatus(
+            this, statusText(feedOk, armed, newest),
+            if (rsi >= 0.0) "%.1f".format(rsi) else "",
+            if (price > 0.0) "%.2f".format(price) else "")
 
         if (firstRun) Prefs.setBaselineDone(this, true)
-        Prefs.setLastPoll(this, true,
-            if (newCount > 0) "· $newCount new" else "")
+        Prefs.setLastPoll(this, feedOk,
+            if (!feedOk) "feed down"
+            else if (newCount > 0) "· $newCount new shift" else "")
     }
 
-    /** Returns true when the tracked signal just closed. */
-    private fun checkOutcome(root: JSONObject): Boolean {
-        val price = root.optJSONObject("price") ?: return false
-        if (!price.has("mid")) return false
-        // Never judge a close off a stale quote.
-        val age = price.optDouble("age_s", -1.0)
-        if (age < 0 || age > MAX_PRICE_AGE_S) return false
-        val mid = price.optDouble("mid", 0.0)
-        if (mid <= 0.0) return false
-
-        val direction = Prefs.signalDirection(this)
-        val entry = Prefs.signalEntry(this)
-        val sl = Prefs.signalSl(this)
-        val tp = Prefs.signalTp(this)
-        if (direction !in listOf("BUY", "SELL")) return false
-        if (entry <= 0.0 || sl <= 0.0 || tp <= 0.0) return false
-
-        val hitTp: Boolean
-        val hitSl: Boolean
-        if (direction == "BUY") {
-            hitTp = mid >= tp
-            hitSl = mid <= sl
-        } else {
-            hitTp = mid <= tp
-            hitSl = mid >= sl
+    /** Bell status line for the UI: armed state first, else the
+     * latest shift with its time, else waiting. */
+    private fun statusText(feedOk: Boolean, armed: String,
+                           newest: JSONObject?): String {
+        if (!feedOk) return "FEED DOWN"
+        if (armed == "sell") return "ARMED SELL — overbought"
+        if (armed == "buy") return "ARMED BUY — oversold"
+        if (newest != null) {
+            val dir = newest.optString("direction", "")
+            val epoch = newest.optLong("epoch", 0L)
+            if (dir.isNotEmpty() && epoch > 0) {
+                return "SHIFT $dir ${fmtTime(epoch)}"
+            }
         }
-        if (!hitTp && !hitSl) return false
-        // Both touched in one poll (wide move): the level nearer the
-        // entry is taken as hit first.
-        val outcome = if (hitTp && hitSl) {
-            if (kotlin.math.abs(mid - tp) <= kotlin.math.abs(mid - sl))
-                "TP" else "SL"
-        } else if (hitTp) "TP" else "SL"
+        return "WAITING"
+    }
 
-        val risk = kotlin.math.abs(entry - sl)
-        val r = if (outcome == "TP" && risk > 0.0)
-            kotlin.math.abs(tp - entry) / risk else -1.0
-        Prefs.setSignalOutcome(this, outcome)
-        notifyOutcome(direction, entry, outcome, r)
-        return true
+    private fun shiftsToLines(shifts: JSONArray): String {
+        val lines = ArrayList<String>()
+        val n = minOf(shifts.length(), MAX_RECENT)
+        for (i in 0 until n) {
+            val s = shifts.optJSONObject(i) ?: continue
+            val dir = s.optString("direction", "")
+            val price = s.optDouble("price", 0.0)
+            val epoch = s.optLong("epoch", 0L)
+            if (dir.isEmpty() || epoch <= 0L) continue
+            lines.add("$dir  %.2f  ${fmtTime(epoch)}".format(price))
+        }
+        return lines.joinToString("\n")
     }
 
     // -- notifications --------------------------------------------------
 
-    private fun notifySignal(direction: String, entry: Double,
-                             sl: Double, tp: Double, ts: Long) {
-        val levels = "Entry %.2f · SL %.2f · TP %.2f".format(entry, sl, tp)
-        post(CH_SIGNALS, (ts % Int.MAX_VALUE).toInt(),
-            "Gold $direction signal — XAUUSD",
-            "$levels — new signal from the gold bot.")
-    }
-
-    private fun notifyOutcome(direction: String, entry: Double,
-                              outcome: String, r: Double) {
-        val title = if (outcome == "TP")
-            "TP HIT %+.2fR".format(r)
-        else
-            "SL HIT %+.2fR".format(r)
-        val id = (Prefs.lastSignalTs(this) % Int.MAX_VALUE).toInt() +
-            OUTCOME_ID_OFFSET
-        post(CH_OUTCOMES, id, title,
-            "$direction @ %.2f closed at $outcome.".format(entry))
+    private fun notifyShift(shift: JSONObject) {
+        val dir = shift.optString("direction", "")
+        val price = shift.optDouble("price", 0.0)
+        val epoch = shift.optLong("epoch", 0L)
+        val title = if (dir == "SELL") "SHIFT SELL — XAUUSD"
+            else "SHIFT BUY — XAUUSD"
+        val side = if (dir == "SELL") "overbought turn" else "oversold turn"
+        val text = "XAUUSD %.2f at %s — 5m %s. Confirm on 1m."
+            .format(price, fmtTime(epoch), side)
+        post(CH_SHIFT, (epoch % Int.MAX_VALUE).toInt(), title, text)
     }
 
     private fun post(channel: String, id: Int, title: String, text: String) {
@@ -217,6 +198,7 @@ class WatchService : Service() {
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(tap)
+            .setDefaults(Notification.DEFAULT_SOUND)
             .setAutoCancel(true)
             .build()
         nm.notify(id, n)
@@ -231,33 +213,20 @@ class WatchService : Service() {
         return Notification.Builder(this, CH_WATCH)
             .setSmallIcon(R.drawable.ic_stat_pulse)
             .setContentTitle("Gold Watch is on")
-            .setContentText("Watching XAUUSD — tap to open the dashboard")
+            .setContentText("Shift bell watching XAUUSD 5m — tap to open")
             .setContentIntent(tap)
             .setOngoing(true)
             .build()
     }
 
-    private fun createChannels() {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(
-            CH_WATCH, "Watcher status", NotificationManager.IMPORTANCE_LOW))
-        nm.createNotificationChannel(NotificationChannel(
-            CH_SIGNALS, "Gold signals", NotificationManager.IMPORTANCE_HIGH))
-        nm.createNotificationChannel(NotificationChannel(
-            CH_OUTCOMES, "Signal outcomes",
-            NotificationManager.IMPORTANCE_DEFAULT))
-    }
-
     companion object {
-        private const val STATE_URL =
-            "https://gold-signals-bot-pjyn.onrender.com/api/state"
+        private const val SHIFT_URL =
+            "https://gold-signals-bot-pjyn.onrender.com/api/shift"
         private const val POLL_SEC = 30L
         private const val FG_ID = 1001
-        private const val OUTCOME_ID_OFFSET = 500_000
-        private const val MAX_PRICE_AGE_S = 120.0
+        private const val MAX_RECENT = 10
         const val CH_WATCH = "watch_status"
-        const val CH_SIGNALS = "signals"
-        const val CH_OUTCOMES = "outcomes"
+        const val CH_SHIFT = "shift"
 
         fun start(ctx: Context) {
             val i = Intent(ctx, WatchService::class.java)
@@ -271,5 +240,50 @@ class WatchService : Service() {
         fun stop(ctx: Context) {
             ctx.stopService(Intent(ctx, WatchService::class.java))
         }
+
+        /** Test button: a real notification through the shift
+         * channel, so the user hears the bell before a real shift. */
+        fun testBell(ctx: Context) {
+            createChannels(ctx)
+            val nm = ctx.getSystemService(NotificationManager::class.java)
+            val tap = PendingIntent.getActivity(
+                ctx, 0,
+                Intent(ctx, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val n = Notification.Builder(ctx, CH_SHIFT)
+                .setSmallIcon(R.drawable.ic_stat_pulse)
+                .setContentTitle("TEST — SHIFT BUY — XAUUSD")
+                .setContentText("Test bell: this is how a real shift sounds.")
+                .setContentIntent(tap)
+                .setDefaults(Notification.DEFAULT_SOUND)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(999_999, n)
+        }
+
+        private fun createChannels(ctx: Context) {
+            val nm = ctx.getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(NotificationChannel(
+                CH_WATCH, "Watcher status",
+                NotificationManager.IMPORTANCE_LOW))
+            // The bell: HIGH importance WITH SOUND — a shift must be
+            // heard, not just seen. Sound is the user's default
+            // notification sound.
+            val bell = NotificationChannel(
+                CH_SHIFT, "Shift bell", NotificationManager.IMPORTANCE_HIGH)
+            bell.setSound(
+                RingtoneManager.getDefaultUri(
+                    RingtoneManager.TYPE_NOTIFICATION),
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .build())
+            bell.enableVibration(true)
+            nm.createNotificationChannel(bell)
+        }
+
+        fun fmtTime(epochSec: Long): String =
+            SimpleDateFormat("HH:mm", Locale.US)
+                .format(Date(epochSec * 1000))
     }
 }
